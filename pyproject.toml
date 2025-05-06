@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zync"
+version = "0.0.0"
+description = "A simple file synchronization system for one-way sync between machines"
+readme = "README.md"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Filesystems",
+]
+requires-python = ">=3.7"
+dependencies = [
+    "watchdog>=2.1.0",
+    "websockets>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-asyncio>=0.14.0",
+    "isort>=5.0.0",
+    "mypy>=0.812",
+    "ruff",
+]
+
+[project.scripts]
+zync-daemon = "zync.daemon:main"
+zync-client = "zync.client:main"
+
+[tool.setuptools]
+packages = ["zync"]
+
+[tool.ruff]
+line-length = 120
+exclude = [
+    "./.git",
+    "./docs/*",
+    "./build",
+    "./venv",
+    "*.pyi",
+    ".pre-commit-config.yaml",
+    "*.md",
+    ".flake8",
+]
+
+[tool.ruff.lint]
+select = [
+    "UP",      # pyupgrade
+    "B",       # flake8-bugbear
+    "B9",      # flake8-bugbear subset
+    "C",       # comprehensions
+    "E",       # pycodestyle
+    "F",       # Pyflakes
+    "N",       # Naming
+    "W",       # Warnings
+    "DTZ",     # datetime rules
+    "I",       # isort (imports order)
+    "RUF001",  # Checks for ambiguous Unicode characters in strings
+    "RUF002",  # Checks for ambiguous Unicode characters in docstrings
+    "RUF003",  # Checks for ambiguous Unicode characters in comments
+    "PLC2401", # Checks for the use of non-ASCII characters in variable names
+    "PLC2403", # Checks for the use of non-ASCII characters in import statements
+    "PLE2510", # Checks for strings that contain the control character BS.
+    "PLE2512", # Checks for strings that contain the raw control character SUB.
+    "PLE2513", # Checks for strings that contain the raw control character ESC.
+    "PLE2514", # Checks for strings that contain the raw control character NUL (0 byte).
+    "PLE2515", # Checks for strings that contain the zero width space character.
+]
+ignore = [
+    # The following ignores are desired by the project maintainers.
+    "E402", # Module level import not at top of file
+    "E501", # Line too long
+    "F405", # Maybe undefined or defined from star import
+    "C408", # Ignored because we like the dict keyword argument syntax
+    "N812", # Ignored because import torch.nn.functional as F is PyTorch convention
+
+    # These are the additional ones we started ignoring after moving to ruff. We should look into each one of them later.
+    "C901", # Complexity of the function is too high
+]
+unfixable = [
+    "PLE2515",
+] # Do not fix this automatically since ruff will replace the zero-width space with \u200b - let's do it manually
+
+# Ignore the following errors for the following files
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["DTZ"] # Ignore datetime rules for tests
