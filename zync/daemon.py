@@ -13,6 +13,8 @@ import json
 import logging
 import os
 import time
+import uuid
+from datetime import datetime
 
 import websockets
 from watchdog.events import FileSystemEventHandler
@@ -220,6 +222,9 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
         base_dirs: Mapping of base_dir names to absolute paths
         db: Database instance
     """
+    # Store current upstream session info
+    upstream_session = {"active": False, "files": {}, "staging_dir": None, "staging_id": None}
+
     try:
         async for message in websocket:
             try:
@@ -290,6 +295,156 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
                     else:
                         response = {"status": "error", "error": "Missing sequence_number"}
 
+                # --- New upstream operations ---
+
+                elif operation == "PREPARE_UPSTREAM":
+                    # Create a session for receiving upstream changes
+                    file_count = request.get("file_count", 0)
+
+                    if file_count <= 0:
+                        response = {"status": "error", "error": "Invalid file count"}
+                    else:
+                        # Generate a unique ID for this staging session
+                        staging_id = str(uuid.uuid4())
+
+                        # Create staging directory
+                        staging_dir = os.path.join(os.path.dirname(db.db_path), f".zync-staged-{staging_id}")
+                        os.makedirs(staging_dir, exist_ok=True)
+
+                        # Store session info
+                        upstream_session = {
+                            "active": True,
+                            "files": {},
+                            "staging_dir": staging_dir,
+                            "staging_id": staging_id,
+                            "created_at": datetime.now(datetime.UTC).isoformat(),
+                        }
+
+                        # Record in database
+                        db.create_staging_session(staging_id, file_count)
+
+                        response = {"status": "ok", "staging_id": staging_id}
+
+                elif operation == "UPSTREAM_FILE":
+                    # Handle receiving a file from the client
+                    if not upstream_session["active"]:
+                        response = {"status": "error", "error": "No active upstream session"}
+                        await websocket.send(json.dumps(response))
+                        continue
+
+                    base_dir = request.get("base_dir")
+                    path = request.get("path")
+                    checksum = request.get("checksum")
+                    size = request.get("size")
+
+                    if not all([base_dir, path, checksum, size]):
+                        response = {"status": "error", "error": "Missing file parameters"}
+                        await websocket.send(json.dumps(response))
+                        continue
+
+                    if base_dir not in base_dirs:
+                        response = {"status": "error", "error": "Invalid base directory"}
+                        await websocket.send(json.dumps(response))
+                        continue
+
+                    # Prepare to receive file data
+                    try:
+                        # Receive binary file data
+                        file_data = await websocket.recv()
+
+                        # Verify checksum
+                        actual_checksum = calculate_checksum(data=file_data)
+                        if actual_checksum != checksum:
+                            response = {"status": "error", "error": "Checksum mismatch"}
+                            await websocket.send(json.dumps(response))
+                            continue
+
+                        # Check for conflicts
+                        target_path = os.path.join(base_dirs[base_dir], path)
+                        has_conflict = False
+                        current_checksum = None
+
+                        if os.path.exists(target_path):
+                            current_checksum = calculate_checksum(target_path)
+                            # Get last known checksum from database
+                            last_known = db.get_last_file_state(base_dir, path)
+
+                            # If the file has changed since last sync
+                            if last_known and current_checksum != last_known["checksum"]:
+                                has_conflict = True
+
+                        # Create directory structure in staging
+                        staged_dir = os.path.join(upstream_session["staging_dir"], base_dir)
+                        staged_file = os.path.join(staged_dir, path)
+                        os.makedirs(os.path.dirname(staged_file), exist_ok=True)
+
+                        # Write file to staging
+                        with open(staged_file, "wb") as f:
+                            f.write(file_data)
+
+                        # Record file info
+                        file_info = {
+                            "path": path,
+                            "base_dir": base_dir,
+                            "checksum": checksum,
+                            "size": size,
+                            "has_conflict": has_conflict,
+                            "current_checksum": current_checksum,
+                        }
+
+                        upstream_session["files"][f"{base_dir}:{path}"] = file_info
+
+                        # Update staging session in database
+                        db.add_staged_file(upstream_session["staging_id"], base_dir, path, checksum, size, has_conflict)
+
+                        response = {"status": "ok"}
+
+                    except Exception as e:
+                        logger.error(f"Error processing upstream file: {str(e)}")
+                        response = {"status": "error", "error": str(e)}
+
+                elif operation == "FINALIZE_UPSTREAM":
+                    # Complete the upstream session
+                    if not upstream_session["active"]:
+                        response = {"status": "error", "error": "No active upstream session"}
+                    else:
+                        # Create metadata file with conflict information
+                        meta_path = os.path.join(upstream_session["staging_dir"], "metadata.json")
+                        with open(meta_path, "w") as f:
+                            json.dump(
+                                {
+                                    "staging_id": upstream_session["staging_id"],
+                                    "created_at": upstream_session["created_at"],
+                                    "files": upstream_session["files"],
+                                    "conflict_count": sum(
+                                        1 for f in upstream_session["files"].values() if f["has_conflict"]
+                                    ),
+                                },
+                                f,
+                                indent=2,
+                            )
+
+                        # Mark session as complete in database
+                        db.complete_staging_session(
+                            upstream_session["staging_id"],
+                            len(upstream_session["files"]),
+                            sum(1 for f in upstream_session["files"].values() if f["has_conflict"]),
+                        )
+
+                        # Send response with staging info
+                        response = {
+                            "status": "ok",
+                            "staging_id": upstream_session["staging_id"],
+                            "file_count": len(upstream_session["files"]),
+                            "conflict_count": sum(1 for f in upstream_session["files"].values() if f["has_conflict"]),
+                        }
+
+                        # Reset session
+                        staging_id = upstream_session["staging_id"]
+                        upstream_session = {"active": False, "files": {}, "staging_dir": None, "staging_id": None}
+
+                        logger.info(f"Upstream changes staged with ID: {staging_id}")
+
                 await websocket.send(json.dumps(response))
 
             except json.JSONDecodeError:
@@ -300,6 +455,15 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
 
     except websockets.exceptions.ConnectionClosed:
         logger.info("Client disconnected")
+
+        # Clean up if there's an active session
+        if upstream_session["active"] and upstream_session["staging_dir"]:
+            try:
+                # Mark session as aborted in database
+                db.abort_staging_session(upstream_session["staging_id"])
+                logger.info(f"Marked upstream session {upstream_session['staging_id']} as aborted")
+            except Exception as e:
+                logger.error(f"Error cleaning up upstream session: {str(e)}")
 
 
 async def run_server(host: str, port: int, base_dirs: dict[str, str], db: DaemonDatabase):
