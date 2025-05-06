@@ -8,7 +8,7 @@ version = "0.0.0"
 description = "A simple file synchronization system for one-way sync between machines"
 readme = "README.md"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Ashwin Bharambe", email = "ashwinb@gmail.com"}
 ]
 license = {text = "MIT"}
 classifiers = [
@@ -16,14 +16,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
     "Topic :: System :: Networking",
     "Topic :: System :: Filesystems",
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.12"
 dependencies = [
     "watchdog>=2.1.0",
     "websockets>=10.0",
