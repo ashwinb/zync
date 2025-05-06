@@ -27,6 +27,8 @@ from .common import (
 )
 from .database import DaemonDatabase
 
+START_TIME = 0
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -226,7 +228,7 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
                 response = {"status": "error", "error": "Unknown operation"}
 
                 if operation == "PING":
-                    response = {"status": "ok", "server_time": timestamp_now(), "uptime": int(time.time() - start_time)}
+                    response = {"status": "ok", "server_time": timestamp_now(), "uptime": int(time.time() - START_TIME)}
 
                 elif operation == "GET_LAST_SEQUENCE":
                     last_sequence = db.get_last_sequence()
@@ -406,8 +408,8 @@ def main():
     maintenance_thread.start()
 
     # Set global start time
-    global start_time
-    start_time = time.time()
+    global START_TIME
+    START_TIME = time.time()
 
     try:
         # Run the WebSocket server

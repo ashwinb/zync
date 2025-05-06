@@ -15,7 +15,8 @@ import logging
 import os
 from typing import Any
 
-import websockets
+# Update imports to use the new websockets API
+from websockets.client import WebSocketClientProtocol, connect
 
 from .common import ensure_directory
 from .database import ClientDatabase
@@ -40,16 +41,16 @@ class FileSyncClient:
         self.sync_dirs = sync_dirs
         self.db = ClientDatabase(db_path)
 
-    async def connect(self) -> websockets.WebSocketClientProtocol:
+    async def connect(self) -> WebSocketClientProtocol:
         """
         Connect to the sync server.
 
         Returns:
             WebSocket connection
         """
-        return await websockets.connect(self.server_url)
+        return await connect(self.server_url)
 
-    async def send_request(self, websocket: websockets.WebSocketClientProtocol, operation: str, **params) -> str:
+    async def send_request(self, websocket: WebSocketClientProtocol, operation: str, **params) -> str:
         """
         Send a request to the server.
 
@@ -65,7 +66,7 @@ class FileSyncClient:
         await websocket.send(json.dumps(request))
         return await websocket.recv()
 
-    async def get_last_sequence(self, websocket: websockets.WebSocketClientProtocol) -> int:
+    async def get_last_sequence(self, websocket: WebSocketClientProtocol) -> int:
         """
         Get the last sequence number from the server.
 
@@ -84,7 +85,7 @@ class FileSyncClient:
             return 0
 
     async def get_changes(
-        self, websocket: websockets.WebSocketClientProtocol, since_sequence: int, limit: int = 1000
+        self, websocket: WebSocketClientProtocol, since_sequence: int, limit: int = 1000
     ) -> tuple[list[dict[str, Any]], bool]:
         """
         Get changes from the server.
@@ -106,7 +107,7 @@ class FileSyncClient:
             return [], False
 
     async def get_file(
-        self, websocket: websockets.WebSocketClientProtocol, base_dir: str, path: str
+        self, websocket: WebSocketClientProtocol, base_dir: str, path: str
     ) -> tuple[bytes | None, dict[str, Any] | None]:
         """
         Get a file from the server.
@@ -141,7 +142,7 @@ class FileSyncClient:
             logger.error(f"Error processing file {path}: {str(e)}")
             return None, None
 
-    async def acknowledge_changes(self, websocket: websockets.WebSocketClientProtocol, sequence: int) -> bool:
+    async def acknowledge_changes(self, websocket: WebSocketClientProtocol, sequence: int) -> bool:
         """
         Acknowledge changes up to a sequence number.
 
@@ -159,7 +160,7 @@ class FileSyncClient:
             return False
         return True
 
-    async def apply_change(self, websocket: websockets.WebSocketClientProtocol, change: dict[str, Any]) -> bool:
+    async def apply_change(self, websocket: WebSocketClientProtocol, change: dict[str, Any]) -> bool:
         """
         Apply a single change to the local filesystem.
 
