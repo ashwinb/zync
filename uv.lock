@@ -214,6 +214,12 @@ dev = [
     { name = "ruff" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.0.0" },
@@ -223,4 +229,10 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "watchdog", specifier = ">=2.1.0" },
     { name = "websockets", specifier = ">=10.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", specifier = ">=0.26.0" },
 ]
