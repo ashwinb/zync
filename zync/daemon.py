@@ -14,7 +14,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import websockets
 from watchdog.events import FileSystemEventHandler
@@ -317,7 +317,7 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
                             "files": {},
                             "staging_dir": staging_dir,
                             "staging_id": staging_id,
-                            "created_at": datetime.now(datetime.UTC).isoformat(),
+                            "created_at": datetime.now(UTC).isoformat(),
                         }
 
                         # Record in database
@@ -353,7 +353,9 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
                         file_data = await websocket.recv()
 
                         # Verify checksum
-                        actual_checksum = calculate_checksum(data=file_data)
+                        import hashlib
+
+                        actual_checksum = hashlib.md5(file_data).hexdigest()
                         if actual_checksum != checksum:
                             response = {"status": "error", "error": "Checksum mismatch"}
                             await websocket.send(json.dumps(response))
@@ -369,9 +371,14 @@ async def handle_client(websocket, base_dirs: dict[str, str], db: DaemonDatabase
                             # Get last known checksum from database
                             last_known = db.get_last_file_state(base_dir, path)
 
-                            # If the file has changed since last sync
-                            if last_known and current_checksum != last_known["checksum"]:
+                            # If the file exists and either:
+                            # 1. There's no last known state (new file), or
+                            # 2. The current file differs from last known state
+                            if last_known is None or current_checksum != last_known["checksum"]:
                                 has_conflict = True
+                                logger.debug(
+                                    f"Conflict detected for {base_dir}/{path}: current={current_checksum}, last_known={last_known['checksum'] if last_known else None}"
+                                )
 
                         # Create directory structure in staging
                         staged_dir = os.path.join(upstream_session["staging_dir"], base_dir)

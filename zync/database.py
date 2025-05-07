@@ -163,6 +163,10 @@ class DaemonDatabase(Database):
             checksum TEXT NOT NULL,
             size INTEGER NOT NULL,
             has_conflict INTEGER DEFAULT 0,
+            status TEXT,
+            actual_file_count INTEGER,
+            conflict_count INTEGER,
+            updated_timestamp TEXT,
             FOREIGN KEY (staging_id) REFERENCES staging_sessions(staging_id),
             UNIQUE (staging_id, base_dir, path)
         )
@@ -343,13 +347,17 @@ class DaemonDatabase(Database):
             expected_file_count: Expected number of files to be staged
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cursor = self.execute("SELECT COUNT(*) FROM staging_sessions")
+
+        # Check if this staging_id already exists
+        cursor = self.execute("SELECT COUNT(*) FROM staging_sessions WHERE staging_id = ?", (staging_id,))
         if cursor.fetchone()[0] == 0:
+            # Insert new session if it doesn't exist
             self.execute(
                 "INSERT INTO staging_sessions (staging_id, status, expected_file_count, created_timestamp, updated_timestamp) VALUES (?, ?, ?, ?, ?)",
                 (staging_id, "in_progress", expected_file_count, now, now),
             )
         else:
+            # Update existing session
             self.execute(
                 "UPDATE staging_sessions SET status = ?, expected_file_count = ?, updated_timestamp = ? WHERE staging_id = ?",
                 ("in_progress", expected_file_count, now, staging_id),
@@ -370,7 +378,10 @@ class DaemonDatabase(Database):
             size: Size of the file in bytes
             has_conflict: Whether this file conflicts with local changes
         """
-        cursor = self.execute("SELECT COUNT(*) FROM staged_files")
+        cursor = self.execute(
+            "SELECT COUNT(*) FROM staged_files WHERE staging_id = ? AND base_dir = ? AND path = ?",
+            (staging_id, base_dir, path),
+        )
         if cursor.fetchone()[0] == 0:
             self.execute(
                 "INSERT INTO staged_files (staging_id, base_dir, path, checksum, size, has_conflict) VALUES (?, ?, ?, ?, ?, ?)",
@@ -378,8 +389,8 @@ class DaemonDatabase(Database):
             )
         else:
             self.execute(
-                "UPDATE staged_files SET base_dir = ?, path = ?, checksum = ?, size = ?, has_conflict = ? WHERE staging_id = ?",
-                (base_dir, path, checksum, size, 1 if has_conflict else 0, staging_id),
+                "UPDATE staged_files SET checksum = ?, size = ?, has_conflict = ? WHERE staging_id = ? AND base_dir = ? AND path = ?",
+                (checksum, size, 1 if has_conflict else 0, staging_id, base_dir, path),
             )
         self.commit()
 
@@ -393,17 +404,10 @@ class DaemonDatabase(Database):
             conflict_count: Number of files with conflicts
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cursor = self.execute("SELECT COUNT(*) FROM staged_files")
-        if cursor.fetchone()[0] == 0:
-            self.execute(
-                "INSERT INTO staged_files (staging_id, base_dir, path, checksum, size, has_conflict) VALUES (?, ?, ?, ?, ?, ?)",
-                (staging_id, "complete", 0, 0, file_count, conflict_count),
-            )
-        else:
-            self.execute(
-                "UPDATE staged_files SET status = ?, actual_file_count = ?, conflict_count = ?, updated_timestamp = ? WHERE staging_id = ?",
-                ("complete", file_count, conflict_count, now, staging_id),
-            )
+        self.execute(
+            "UPDATE staging_sessions SET status = ?, actual_file_count = ?, conflict_count = ?, updated_timestamp = ? WHERE staging_id = ?",
+            ("complete", file_count, conflict_count, now, staging_id),
+        )
         self.commit()
 
     def abort_staging_session(self, staging_id: str) -> None:
@@ -414,17 +418,10 @@ class DaemonDatabase(Database):
             staging_id: Unique identifier for the staging session
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cursor = self.execute("SELECT COUNT(*) FROM staged_files")
-        if cursor.fetchone()[0] == 0:
-            self.execute(
-                "INSERT INTO staged_files (staging_id, base_dir, path, checksum, size, has_conflict) VALUES (?, ?, ?, ?, ?, ?)",
-                (staging_id, "aborted", 0, 0, 0, 0),
-            )
-        else:
-            self.execute(
-                "UPDATE staged_files SET status = ?, updated_timestamp = ? WHERE staging_id = ?",
-                ("aborted", now, staging_id),
-            )
+        self.execute(
+            "UPDATE staging_sessions SET status = ?, updated_timestamp = ? WHERE staging_id = ?",
+            ("aborted", now, staging_id),
+        )
         self.commit()
 
     def get_staging_sessions(self, status: str | None = None) -> list[dict[str, Any]]:
@@ -497,17 +494,14 @@ class DaemonDatabase(Database):
             skipped_count: Number of files skipped
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        cursor = self.execute("SELECT COUNT(*) FROM staged_files")
-        if cursor.fetchone()[0] == 0:
-            self.execute(
-                "INSERT INTO staged_files (staging_id, base_dir, path, checksum, size, has_conflict) VALUES (?, ?, ?, ?, ?, ?)",
-                (staging_id, "applied", 0, 0, applied_count, skipped_count),
-            )
-        else:
-            self.execute(
-                "UPDATE staged_files SET status = ?, updated_timestamp = ? WHERE staging_id = ?",
-                ("applied", now, staging_id),
-            )
+        self.execute(
+            "UPDATE staging_sessions SET status = ?, updated_timestamp = ? WHERE staging_id = ?",
+            ("applied", now, staging_id),
+        )
+        self.execute(
+            "INSERT OR REPLACE INTO applied_sessions (staging_id, applied_timestamp, applied_file_count, skipped_file_count) VALUES (?, ?, ?, ?)",
+            (staging_id, now, applied_count, skipped_count),
+        )
         self.commit()
 
     def get_last_file_state(self, base_dir: str, path: str) -> dict[str, Any] | None:
