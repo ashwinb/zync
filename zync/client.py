@@ -295,6 +295,166 @@ class FileSyncClient:
             logger.error(f"Connection error: {str(e)}")
             return False
 
+    async def collect_upstream_changes(self, local_dirs: list[str] = None) -> dict:
+        """
+        Collect changes from local (machine R) that need to be sent upstream to machine E.
+
+        Args:
+            local_dirs: Optional list of local directories to check for changes.
+                       If None, all sync directories will be checked.
+
+        Returns:
+            Dictionary mapping file paths to their content and metadata
+        """
+        changes = {}
+
+        # If no specific directories provided, use all sync directories
+        if local_dirs is None:
+            dirs_to_check = self.sync_dirs
+        else:
+            dirs_to_check = {k: v for k, v in self.sync_dirs.items() if v in local_dirs}
+
+        if not dirs_to_check:
+            logger.warning("No valid directories to check for upstream changes")
+            return changes
+
+        # For each directory, find files that have changed
+        for base_dir, local_dir in dirs_to_check.items():
+            logger.info(f"Collecting changes from {local_dir}")
+
+            # Get the last known state of files from the database
+            known_files = self.db.get_known_files(base_dir)
+
+            # Walk through the directory
+            for root, _, files in os.walk(local_dir):
+                for filename in files:
+                    file_path = os.path.join(root, filename)
+                    rel_path = os.path.relpath(file_path, local_dir)
+
+                    # Skip hidden files and directories
+                    if any(part.startswith(".") for part in rel_path.split(os.sep)):
+                        continue
+
+                    # Calculate checksum of the file
+                    try:
+                        with open(file_path, "rb") as f:
+                            file_data = f.read()
+                        checksum = hashlib.md5(file_data).hexdigest()
+                        size = len(file_data)
+
+                        # If file has changed or is new
+                        if rel_path not in known_files or known_files[rel_path]["checksum"] != checksum:
+                            changes[f"{base_dir}:{rel_path}"] = {
+                                "data": file_data,
+                                "checksum": checksum,
+                                "size": size,
+                                "base_dir": base_dir,
+                                "path": rel_path,
+                            }
+                    except Exception as e:
+                        logger.error(f"Error reading {file_path}: {str(e)}")
+
+        logger.info(f"Collected {len(changes)} changes to send upstream")
+        return changes
+
+    async def send_upstream_changes(self, changes: dict) -> bool:
+        """
+        Send collected changes upstream to machine E.
+
+        Args:
+            changes: Dictionary of changes from collect_upstream_changes()
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not changes:
+            logger.info("No changes to send upstream")
+            return True
+
+        try:
+            async with await self.connect() as websocket:
+                # First send a request to prepare for upstream changes
+                response = await self.send_request(websocket, "PREPARE_UPSTREAM", file_count=len(changes))
+                data = json.loads(response)
+
+                if data["status"] != "ok":
+                    logger.error(f"Server rejected upstream changes: {data.get('error')}")
+                    return False
+
+                # Now send each file
+                for file_id, file_info in changes.items():
+                    logger.debug(f"Sending upstream file: {file_id}")
+
+                    # Send file metadata
+                    meta_request = {
+                        "operation": "UPSTREAM_FILE",
+                        "base_dir": file_info["base_dir"],
+                        "path": file_info["path"],
+                        "checksum": file_info["checksum"],
+                        "size": file_info["size"],
+                    }
+                    await websocket.send(json.dumps(meta_request))
+
+                    # Send file data
+                    await websocket.send(file_info["data"])
+
+                    # Get acknowledgment
+                    response = await websocket.recv()
+                    data = json.loads(response)
+
+                    if data["status"] != "ok":
+                        logger.error(f"Error sending {file_id}: {data.get('error')}")
+                        return False
+
+                # Finalize the upload and get the staging ID
+                response = await self.send_request(websocket, "FINALIZE_UPSTREAM")
+                data = json.loads(response)
+
+                if data["status"] != "ok":
+                    logger.error(f"Failed to finalize upstream changes: {data.get('error')}")
+                    return False
+
+                staging_id = data.get("staging_id")
+                logger.info(f"Upstream changes staged successfully with ID: {staging_id}")
+
+                return True
+
+        except Exception as e:
+            logger.error(f"Error sending upstream changes: {str(e)}")
+            return False
+
+    async def update_upstream(self, local_dirs: list[str] = None) -> bool:
+        """
+        Main method to send local changes from machine R upstream to machine E.
+
+        Args:
+            local_dirs: Optional list of local directories to check for changes
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Collect changes
+            changes = await self.collect_upstream_changes(local_dirs)
+
+            if not changes:
+                logger.info("No changes to send upstream")
+                return True
+
+            # Send changes to server
+            success = await self.send_upstream_changes(changes)
+
+            if success:
+                logger.info(f"Successfully sent {len(changes)} changes upstream")
+                return True
+            else:
+                logger.error("Failed to send changes upstream")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error during upstream update: {str(e)}")
+            return False
+
 
 async def run_sync_loop(client: FileSyncClient, interval: int):
     """
@@ -347,6 +507,10 @@ def main():
     parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Logging level"
     )
+
+    # Add new command for updating upstream
+    parser.add_argument("--update-upstream", action="store_true", help="Send local changes upstream to machine E")
+
     args = parser.parse_args()
 
     # Configure logging
@@ -366,7 +530,11 @@ def main():
     # Create sync client
     client = FileSyncClient(args.server, sync_dirs, args.db)
 
-    if args.once:
+    if args.update_upstream:
+        # Run upstream update command
+        success = asyncio.run(client.update_upstream())
+        return 0 if success else 1
+    elif args.once:
         # Run once and exit
         success = asyncio.run(client.sync_changes())
         return 0 if success else 1
